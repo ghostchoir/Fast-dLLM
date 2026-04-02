@@ -19,7 +19,7 @@ class Fast_dLLM_QwenForCausalLM:
         input_ids,
         tokenizer,
         block_size,
-        max_new_tokens, 
+        max_new_tokens,
         small_block_size,
         min_len,
         seq_len,
@@ -29,13 +29,18 @@ class Fast_dLLM_QwenForCausalLM:
         use_block_cache=False,
         top_p=0.95,
         temperature=0.0,
+        kv_quant_fn=None,
     ):
         num_blocks = max_new_tokens // block_size + seq_len.max().item() // block_size
         batch_size = input_ids.shape[0]
+        prev_kv_len = 0
 
         if min_len > block_size:
             output = self.forward(input_ids=input_ids[:, :(min_len // block_size * block_size)], use_cache=True, update_past_key_values=True, block_size=block_size)
             logits, past_key_values = output.logits, output.past_key_values
+            if kv_quant_fn is not None:
+                result = kv_quant_fn(past_key_values, num_old_tokens=0)
+                prev_kv_len = result if result is not None else past_key_values.key_cache[0].shape[2]
             if min_len % block_size == 0:
                 predict_sample_idx = (seq_len == min_len)
                 predict_logits = logits[predict_sample_idx, -1:, :]
@@ -80,6 +85,9 @@ class Fast_dLLM_QwenForCausalLM:
                         break
                     output = self.forward(input_ids=x_t[:, -block_size:], use_cache=True, past_key_values=past_key_values, update_past_key_values=True, block_size=block_size)
                     logits, past_key_values = output.logits, output.past_key_values
+                    if kv_quant_fn is not None:
+                        result = kv_quant_fn(past_key_values, num_old_tokens=prev_kv_len)
+                        prev_kv_len = result if result is not None else past_key_values.key_cache[0].shape[2]
                     next_token = logits[:, -1:, :].argmax(dim=-1)
                     next_token[finished_flag] = tokenizer.pad_token_id
                     x_t = torch.cat([x_t, next_token], dim=1)
